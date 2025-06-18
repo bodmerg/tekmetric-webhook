@@ -11,7 +11,7 @@ if (!DISCORD_WEBHOOK_URL) {
 
 app.use(express.json());
 
-// In-memory cache for customer names keyed by repair order number
+// Simple in-memory cache: roNumber -> customerName
 const customerCache = {};
 
 app.post('/tekmetric-webhook', async (req, res) => {
@@ -19,20 +19,19 @@ app.post('/tekmetric-webhook', async (req, res) => {
   const event = payload.event || '';
   const data = payload.data || {};
 
-  // Extract repair order number safely
   const roNumber = data.repairOrderNumber || null;
 
-  // Try to get customer name from payload
   let customerName = 'Unknown Customer';
-  if (data.customer?.firstName && data.customer?.lastName) {
+
+  if (roNumber && customerCache[roNumber]) {
+    customerName = customerCache[roNumber];
+  } else if (data.customer?.firstName && data.customer?.lastName) {
     customerName = `${data.customer.firstName} ${data.customer.lastName}`;
-    if (roNumber) customerCache[roNumber] = customerName; // cache it
-  } else if (roNumber && customerCache[roNumber]) {
-    customerName = customerCache[roNumber]; // fallback from cache
+    if (roNumber) customerCache[roNumber] = customerName;
   } else {
-    // fallback: try to extract from event string
-    const match = event.match(/^([A-Z][a-z]+\s[A-Z][a-z]+)/);
-    if (match && match[1]) {
+    // fallback: try to extract name from event string but ignore "Repair Order"
+    const match = event.match(/^([A-Z][a-z]+ [A-Z][a-z]+)/);
+    if (match && match[1] && match[1].toLowerCase() !== 'repair order') {
       customerName = match[1];
       if (roNumber) customerCache[roNumber] = customerName;
     }
@@ -47,7 +46,7 @@ app.post('/tekmetric-webhook', async (req, res) => {
       const approvedCount = data.jobs?.filter(job => job.authorized === true).length || 0;
       const declinedCount = data.jobs?.filter(job => job.authorized === false).length || 0;
       message = `🔧 **Work Authorization**\n${customerName} approved ${approvedCount} job(s) and declined ${declinedCount} job(s) for RO #${roNumber}`;
-    } else if (data.repairOrderStatus?.name?.toLowerCase() === 'complete') {
+    } else if (data.repairOrderStatus?.name?.toLowerCase() === 'complete' || data.repairOrderStatus?.name?.toLowerCase() === 'completed') {
       message = `🎉 **RO Completed**\nRO #${roNumber} for ${customerName} is marked as completed.`;
     } else if (data.amountPaid && data.amountPaid > 0 && data.amountPaid === data.totalSales) {
       const total = (data.amountPaid / 100).toFixed(2);
@@ -61,7 +60,7 @@ app.post('/tekmetric-webhook', async (req, res) => {
     } else if (event.toLowerCase().includes('payment made')) {
       const payer = data.payerName || customerName;
       const amount = data.amount ? (data.amount / 100).toFixed(2) : 'Unknown';
-      message = `💵 **Payment Made**\n${payer} paid $${amount}${roNumber ? ` for RO #${roNumber}` : ''}`;
+      message = `💵 **Payment Made**\n${payer} paid $${amount}`;
     }
 
     if (message) {
