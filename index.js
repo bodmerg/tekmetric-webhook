@@ -11,56 +11,80 @@ if (!DISCORD_WEBHOOK_URL) {
 
 app.use(express.json());
 
-// Simple in-memory cache: roNumber -> customerName
-const customerCache = {};
+// Cache to store repairOrderId -> repairOrderNumber and customerName
+const roCache = {};
 
 app.post('/tekmetric-webhook', async (req, res) => {
   const payload = req.body;
   const event = payload.event || '';
   const data = payload.data || {};
 
-  const roNumber = data.repairOrderNumber || null;
+  // Update cache if possible
+  if (data.repairOrderNumber && data.customerId && data.customer) {
+    const fullName = `${data.customer.firstName} ${data.customer.lastName}`;
+    roCache[data.id || data.repairOrderId] = {
+      repairOrderNumber: data.repairOrderNumber,
+      customerName: fullName,
+    };
+  } else if (data.repairOrderNumber && data.customerId && data.customerId !== null) {
+    // Sometimes customer info isn't nested under data.customer, so store repairOrderNumber only here
+    roCache[data.id || data.repairOrderId] = {
+      repairOrderNumber: data.repairOrderNumber,
+      customerName: null,
+    };
+  }
 
+  // Retrieve cached info if exists
+  const cached = roCache[data.id || data.repairOrderId] || {};
+  const cachedRoNumber = cached.repairOrderNumber || data.repairOrderNumber || 'Unknown';
+  const cachedCustomerName = cached.customerName || 'Unknown Customer';
+
+  // Use customer name from payload or fallback to cached or parsed name
   let customerName = 'Unknown Customer';
-
-  if (roNumber && customerCache[roNumber]) {
-    customerName = customerCache[roNumber];
-  } else if (data.customer?.firstName && data.customer?.lastName) {
+  if (data.customer?.firstName && data.customer?.lastName) {
     customerName = `${data.customer.firstName} ${data.customer.lastName}`;
-    if (roNumber) customerCache[roNumber] = customerName;
+  } else if (cachedCustomerName !== 'Unknown Customer') {
+    customerName = cachedCustomerName;
   } else {
-    // fallback: try to extract name from event string but ignore "Repair Order"
-    const match = event.match(/^([A-Z][a-z]+ [A-Z][a-z]+)/);
-    if (match && match[1] && match[1].toLowerCase() !== 'repair order') {
+    // Fallback: try to parse from event string
+    const match = event.match(/^([A-Z][a-z]+\s[A-Z][a-z]+)\s(viewed|approved|declined|marked|paid)/i);
+    if (match && match[1]) {
       customerName = match[1];
-      if (roNumber) customerCache[roNumber] = customerName;
     }
   }
 
   let message = null;
 
   try {
+    // Estimate Viewed
     if (event.toLowerCase().includes('estimate') && event.toLowerCase().includes('viewed')) {
-      message = `🧐 **Estimate Viewed**\n${customerName} viewed estimate for RO #${roNumber}`;
-    } else if (event.toLowerCase().includes('approved') && event.toLowerCase().includes('declined')) {
+      message = `🧐 **Estimate Viewed**\n${customerName} viewed estimate for RO #${cachedRoNumber}`;
+    }
+    // Work Approved / Declined
+    else if (event.toLowerCase().includes('approved') && event.toLowerCase().includes('declined')) {
       const approvedCount = data.jobs?.filter(job => job.authorized === true).length || 0;
       const declinedCount = data.jobs?.filter(job => job.authorized === false).length || 0;
-      message = `🔧 **Work Authorization**\n${customerName} approved ${approvedCount} job(s) and declined ${declinedCount} job(s) for RO #${roNumber}`;
-    } else if (data.repairOrderStatus?.name?.toLowerCase() === 'complete' || data.repairOrderStatus?.name?.toLowerCase() === 'completed') {
-      message = `🎉 **RO Completed**\nRO #${roNumber} for ${customerName} is marked as completed.`;
-    } else if (data.amountPaid && data.amountPaid > 0 && data.amountPaid === data.totalSales) {
-      const total = (data.amountPaid / 100).toFixed(2);
-      message = `💳 **Payment Received**\nRO #${roNumber} for ${customerName} has been paid in full.\nTotal: $${total}`;
-    } else if (event.toLowerCase().includes('inspection') && event.toLowerCase().includes('complete')) {
-      message = `🔍 **Inspection Complete**\n${data.name || 'Inspection'} completed for RO #${roNumber || 'Unknown'} for ${customerName}`;
-    } else if (event.toLowerCase().includes('purchase order') && event.toLowerCase().includes('received')) {
+      message = `🔧 **Work Authorization**\n${customerName} approved ${approvedCount} job(s) and declined ${declinedCount} job(s) for RO #${cachedRoNumber}`;
+    }
+    // Repair Order Completed
+    else if (data.repairOrderStatus?.name?.toLowerCase() === 'complete' || data.repairOrderStatus?.name?.toLowerCase() === 'completed') {
+      message = `🎉 **RO Completed**\nRO #${cachedRoNumber} for ${customerName} is marked as completed.`;
+    }
+    // Inspection Completed
+    else if (event.toLowerCase().includes('inspection') && event.toLowerCase().includes('complete')) {
+      message = `🔍 **Inspection Complete**\n${data.name || 'Inspection'} completed for RO #${cachedRoNumber} for ${customerName}`;
+    }
+    // Part Received
+    else if (event.toLowerCase().includes('purchase order') && event.toLowerCase().includes('received')) {
       const poMatch = event.match(/Purchase Order #(\d+)/);
       const poNumber = poMatch ? poMatch[1] : 'Unknown';
       message = `📦 **Part Received**\nPurchase Order #${poNumber} marked as received.`;
-    } else if (event.toLowerCase().includes('payment made')) {
+    }
+    // Payment Made
+    else if (event.toLowerCase().includes('payment made')) {
       const payer = data.payerName || customerName;
       const amount = data.amount ? (data.amount / 100).toFixed(2) : 'Unknown';
-      message = `💵 **Payment Made**\n${payer} paid $${amount}`;
+      message = `💵 **Payment Made**\n${payer} paid $${amount} for RO #${cachedRoNumber}`;
     }
 
     if (message) {
