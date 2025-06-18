@@ -17,7 +17,6 @@ app.post('/tekmetric-webhook', async (req, res) => {
   const data = payload.data || {};
 
   let customerName = 'Unknown Customer';
-
   if (data.customer?.firstName && data.customer?.lastName) {
     customerName = `${data.customer.firstName} ${data.customer.lastName}`;
   } else {
@@ -30,32 +29,49 @@ app.post('/tekmetric-webhook', async (req, res) => {
   let message = null;
 
   try {
+    // Estimate Viewed
     if (event.toLowerCase().includes('estimate') && event.toLowerCase().includes('viewed')) {
       message = `🧐 **Estimate Viewed**\n${customerName} viewed estimate for RO #${data.repairOrderNumber}`;
-    } else if (event.toLowerCase().includes('approved') && event.toLowerCase().includes('declined')) {
+    }
+    // Work Approved / Declined
+    else if (event.toLowerCase().includes('approved') && event.toLowerCase().includes('declined')) {
       const approvedCount = data.jobs?.filter(job => job.authorized === true).length || 0;
       const declinedCount = data.jobs?.filter(job => job.authorized === false).length || 0;
       message = `🔧 **Work Authorization**\n${customerName} approved ${approvedCount} job(s) and declined ${declinedCount} job(s) for RO #${data.repairOrderNumber}`;
-    } else if (data.repairOrderStatus?.name?.toLowerCase() === 'completed') {
+    }
+    // Repair Order Completed
+    else if (data.repairOrderStatus?.name?.toLowerCase() === 'complete' || data.repairOrderStatus?.name?.toLowerCase() === 'completed') {
       message = `🎉 **RO Completed**\nRO #${data.repairOrderNumber} for ${customerName} is marked as completed.`;
-    } else if (event.toLowerCase().includes('status') || event.toLowerCase().includes('label')) {
-      const status = data.repairOrderStatus?.name || 'Unknown';
-      const label = data.repairOrderLabel?.name || '';
-      message = `📌 **Status Update**\nRO #${data.repairOrderNumber} for ${customerName} status changed to **${status}**${label ? ` (${label})` : ''}`;
-    } else if (data.amountPaid && data.amountPaid > 0 && data.amountPaid === data.totalSales) {
-      const total = (data.amountPaid / 100).toFixed(2);
-      message = `💳 **Payment Received**\nRO #${data.repairOrderNumber} for ${customerName} has been paid in full.\nTotal: $${total}`;
-    } else if (event.toLowerCase().includes('inspection') && event.toLowerCase().includes('complete')) {
-      message = `🔍 **Inspection Complete**\n${data.name || 'Inspection'} completed for RO #${data.repairOrderId || 'Unknown'} for ${customerName}`;
-    } else if (event.toLowerCase().includes('purchase order') && event.toLowerCase().includes('received')) {
+    }
+    // Inspection Completed
+    else if (event.toLowerCase().includes('inspection') && event.toLowerCase().includes('complete')) {
+      message = `🔍 **Inspection Complete**\n${data.name || 'Inspection'} completed for RO #${data.repairOrderId || data.repairOrderNumber || 'Unknown'} for ${customerName}`;
+    }
+    // Part Received
+    else if (event.toLowerCase().includes('purchase order') && event.toLowerCase().includes('received')) {
       const poMatch = event.match(/Purchase Order #(\d+)/);
       const poNumber = poMatch ? poMatch[1] : 'Unknown';
       message = `📦 **Part Received**\nPurchase Order #${poNumber} marked as received.`;
-    } else if (event.toLowerCase().includes('payment made')) {
+    }
+    // Payment Made - partial or full
+    else if (event.toLowerCase().includes('payment made')) {
       const payer = data.payerName || customerName;
       const amount = data.amount ? (data.amount / 100).toFixed(2) : 'Unknown';
-      const roNum = data.repairOrderId || 'Unknown';
-      message = `💵 **Payment Made**\n${payer} paid $${amount} for RO #${roNum}`;
+      const paidAmount = data.amountPaid || 0;
+      const totalSales = data.totalSales || 0;
+      const roNum = data.repairOrderNumber || data.repairOrderId || 'Unknown';
+
+      if (paidAmount > 0 && totalSales > 0) {
+        // Partial or full payment based on amountPaid vs totalSales
+        if (paidAmount >= totalSales) {
+          message = `💳 **Payment Received - Paid in Full**\nRO #${roNum} for ${customerName} has been paid in full.\nTotal: $${(paidAmount / 100).toFixed(2)}`;
+        } else {
+          message = `💵 **Payment Made (Partial)**\n${payer} paid $${amount} towards RO #${roNum}.`;
+        }
+      } else {
+        // Fallback payment message if amountPaid or totalSales not present
+        message = `💵 **Payment Made**\n${payer} paid $${amount} for RO #${roNum}`;
+      }
     }
 
     if (message) {
