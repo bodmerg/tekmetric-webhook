@@ -1,4 +1,3 @@
-// index.js
 const express = require('express');
 const axios = require('axios');
 const app = express();
@@ -11,10 +10,10 @@ if (!DISCORD_WEBHOOK_URL) {
 
 app.use(express.json());
 
-// Caches:
-// roCustomerCache: key = repairOrderNumber, value = customerName
-// idToRoCache: key = repairOrderId, value = repairOrderNumber (for payment/refund events)
+// Cache:
+// key = repairOrderNumber (friendly number), value = customerName
 const roCustomerCache = {};
+// key = repairOrderId (internal ID), value = repairOrderNumber
 const idToRoCache = {};
 
 app.post('/tekmetric-webhook', async (req, res) => {
@@ -26,39 +25,47 @@ app.post('/tekmetric-webhook', async (req, res) => {
   const repairOrderNumber = data.repairOrderNumber || null;
   const repairOrderId = data.id || data.repairOrderId || null;
 
-  // Determine customerName from data or event string
-  let customerName = 'Unknown Customer';
-
-  // Try to get customer name from payload data first
-  if (data.customer?.firstName && data.customer?.lastName) {
-    customerName = `${data.customer.firstName} ${data.customer.lastName}`;
-  } else {
-    // Try to parse customer name from event string like "Grant Bodmer approved..."
-    const match = event.match(/^([A-Z][a-z]+\s[A-Z][a-z]+)/);
-    if (match && match[1]) {
-      customerName = match[1];
-    }
+  // Cache customer name when available, keyed by repairOrderNumber
+  if (repairOrderNumber && data.customer?.firstName && data.customer?.lastName) {
+    roCustomerCache[repairOrderNumber] = `${data.customer.firstName} ${data.customer.lastName}`;
+    console.log(`[CACHE] Stored customer name "${roCustomerCache[repairOrderNumber]}" for RO #${repairOrderNumber}`);
   }
 
-  // Cache repairOrderNumber <-> customerName mapping if we have both
-  if (repairOrderNumber && customerName !== 'Unknown Customer') {
-    roCustomerCache[repairOrderNumber] = customerName;
-    console.log(`[CACHE] Stored customer name "${customerName}" for RO #${repairOrderNumber}`);
-  }
-
-  // Cache repairOrderId <-> repairOrderNumber mapping
+  // Cache mapping of repairOrderId => repairOrderNumber for use in payment events
   if (repairOrderId && repairOrderNumber) {
     idToRoCache[repairOrderId] = repairOrderNumber;
     console.log(`[CACHE] Stored RO ID ${repairOrderId} => RO #${repairOrderNumber}`);
   }
 
-  // For events where repairOrderNumber is missing, try to get it from repairOrderId
-  const effectiveRoNumber = repairOrderNumber || (repairOrderId && idToRoCache[repairOrderId]) || null;
+  // Determine customer name
+  let customerName = 'Unknown Customer';
 
-  // For customer name, if still unknown, try to get from cache by RO number
-  if ((customerName === 'Unknown Customer') && effectiveRoNumber && roCustomerCache[effectiveRoNumber]) {
-    customerName = roCustomerCache[effectiveRoNumber];
-    console.log(`[CACHE HIT] Found customer name "${customerName}" for RO #${effectiveRoNumber}`);
+  // Priority: from payload customer info
+  if (data.customer?.firstName && data.customer?.lastName) {
+    customerName = `${data.customer.firstName} ${data.customer.lastName}`;
+  } else {
+    // Only parse customer name from event string if it does NOT start with "Repair Order"
+    if (!event.startsWith('Repair Order')) {
+      const nameMatch = event.match(/^([A-Z][a-z]+ [A-Z][a-z]+)/);
+      if (nameMatch && nameMatch[1]) {
+        customerName = nameMatch[1];
+        console.log(`[NO CACHE] Parsed customer from event string: ${customerName}`);
+      } else {
+        console.log(`[NO CACHE] Customer name unknown`);
+      }
+    } else {
+      console.log(`[NO CACHE] Event starts with 'Repair Order', skip parsing customer name from event string`);
+    }
+  }
+
+  // Resolve effective repair order number for messaging
+  let effectiveRoNumber = repairOrderNumber;
+  if (!effectiveRoNumber && repairOrderId && idToRoCache[repairOrderId]) {
+    effectiveRoNumber = idToRoCache[repairOrderId];
+    console.log(`[CACHE] Resolved RO #${effectiveRoNumber} from RO ID ${repairOrderId}`);
+  }
+  if (!effectiveRoNumber) {
+    effectiveRoNumber = 'Unknown';
   }
 
   let message = null;
@@ -66,33 +73,39 @@ app.post('/tekmetric-webhook', async (req, res) => {
   try {
     // Estimate Viewed
     if (event.toLowerCase().includes('estimate') && event.toLowerCase().includes('viewed')) {
-      message = `🧐 **Estimate Viewed**\n${customerName} viewed estimate for RO #${effectiveRoNumber || 'Unknown'}`;
+      message = `🧐 **Estimate Viewed**\n${customerName} viewed estimate for RO #${effectiveRoNumber}`;
     }
-    // Work Approved / Declined
+
+    // Work Approved / Declined (based on jobs array)
     else if (event.toLowerCase().includes('approved') && event.toLowerCase().includes('declined')) {
       const approvedCount = data.jobs?.filter(job => job.authorized === true).length || 0;
       const declinedCount = data.jobs?.filter(job => job.authorized === false).length || 0;
-      message = `🔧 **Work Authorization**\n${customerName} approved ${approvedCount} job(s) and declined ${declinedCount} job(s) for RO #${effectiveRoNumber || 'Unknown'}`;
+      message = `🔧 **Work Authorization**\n${customerName} approved ${approvedCount} job(s) and declined ${declinedCount} job(s) for RO #${effectiveRoNumber}`;
     }
+
     // Repair Order Completed
     else if (data.repairOrderStatus?.name?.toLowerCase() === 'complete' || data.repairOrderStatus?.name?.toLowerCase() === 'completed') {
-      message = `🎉 **RO Completed**\nRO #${effectiveRoNumber || 'Unknown'} for ${customerName} is marked as completed.`;
+      message = `🎉 **RO Completed**\nRO #${effectiveRoNumber} for ${customerName} is marked as completed.`;
     }
+
     // Payment Received (fully paid)
     else if (data.amountPaid && data.amountPaid > 0 && data.totalSales && data.amountPaid === data.totalSales) {
       const total = (data.amountPaid / 100).toFixed(2);
-      message = `💳 **Payment Received**\nRO #${effectiveRoNumber || 'Unknown'} for ${customerName} has been paid in full.\nTotal: $${total}`;
+      message = `💳 **Payment Received**\nRO #${effectiveRoNumber} for ${customerName} has been paid in full.\nTotal: $${total}`;
     }
+
     // Payment Made (partial or any payment event)
     else if (event.toLowerCase().includes('payment made')) {
       const amount = data.amount ? (data.amount / 100).toFixed(2) : 'Unknown';
       const payer = data.payerName || customerName;
-      message = `💵 **Payment Made**\n${payer} paid $${amount} for RO #${effectiveRoNumber || 'Unknown'}`;
+      message = `💵 **Payment Made**\n${payer} paid $${amount} for RO #${effectiveRoNumber}`;
     }
+
     // Inspection Completed
     else if (event.toLowerCase().includes('inspection') && event.toLowerCase().includes('complete')) {
-      message = `🔍 **Inspection Complete**\n${data.name || 'Inspection'} completed for RO #${effectiveRoNumber || 'Unknown'} for ${customerName}`;
+      message = `🔍 **Inspection Complete**\n${data.name || 'Inspection'} completed for RO #${effectiveRoNumber} for ${customerName}`;
     }
+
     // Part Received
     else if (event.toLowerCase().includes('purchase order') && event.toLowerCase().includes('received')) {
       const poMatch = event.match(/Purchase Order #(\d+)/);
@@ -101,9 +114,9 @@ app.post('/tekmetric-webhook', async (req, res) => {
     }
 
     if (message) {
-      console.log(`[EVENT RECEIVED] Event: "${event}" | RO #: ${effectiveRoNumber || 'Unknown'} | Customer: ${customerName}`);
       await axios.post(DISCORD_WEBHOOK_URL, { content: message });
       res.status(200).send('Notification sent to Discord');
+      console.log(`[MESSAGE SENT] ${message}`);
     } else {
       console.log(`[NO HANDLER] Event: "${event}"`);
       res.status(200).send('No matching event handled');
