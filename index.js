@@ -21,7 +21,7 @@ app.post('/tekmetric-webhook', async (req, res) => {
   if (data.customer?.firstName && data.customer?.lastName) {
     customerName = `${data.customer.firstName} ${data.customer.lastName}`;
   } else {
-    const match = event.match(/^([A-Z][a-z]+\s[A-Z][a-z]+)\s(viewed|approved|declined|marked|paid)/i);
+    const match = event.match(/^([A-Z][a-z]+\s[A-Z][a-z]+)\s(viewed|approved|declined|marked|paid|made)/i);
     if (match && match[1]) {
       customerName = match[1];
     }
@@ -42,9 +42,6 @@ app.post('/tekmetric-webhook', async (req, res) => {
       const status = data.repairOrderStatus?.name || 'Unknown';
       const label = data.repairOrderLabel?.name || '';
       message = `📌 **Status Update**\nRO #${data.repairOrderNumber} for ${customerName} status changed to **${status}**${label ? ` (${label})` : ''}`;
-    } else if (data.amountPaid && data.amountPaid > 0 && data.amountPaid === data.totalSales) {
-      const total = (data.amountPaid / 100).toFixed(2);
-      message = `💳 **Payment Received**\nRO #${data.repairOrderNumber} for ${customerName} has been paid in full.\nTotal: $${total}`;
     } else if (event.toLowerCase().includes('inspection') && event.toLowerCase().includes('complete')) {
       message = `🔍 **Inspection Complete**\n${data.name || 'Inspection'} completed for RO #${data.repairOrderId || 'Unknown'} for ${customerName}`;
     } else if (event.toLowerCase().includes('purchase order') && event.toLowerCase().includes('received')) {
