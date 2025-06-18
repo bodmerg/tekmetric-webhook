@@ -11,43 +11,30 @@ if (!DISCORD_WEBHOOK_URL) {
 
 app.use(express.json());
 
-// Cache to store repairOrderId -> repairOrderNumber and customerName
-const roCache = {};
+// Cache: key = repairOrderNumber (friendly ticket #), value = customerName
+const roCustomerCache = {};
 
 app.post('/tekmetric-webhook', async (req, res) => {
   const payload = req.body;
   const event = payload.event || '';
   const data = payload.data || {};
 
-  // Update cache if possible
-  if (data.repairOrderNumber && data.customerId && data.customer) {
-    const fullName = `${data.customer.firstName} ${data.customer.lastName}`;
-    roCache[data.id || data.repairOrderId] = {
-      repairOrderNumber: data.repairOrderNumber,
-      customerName: fullName,
-    };
-  } else if (data.repairOrderNumber && data.customerId && data.customerId !== null) {
-    // Sometimes customer info isn't nested under data.customer, so store repairOrderNumber only here
-    roCache[data.id || data.repairOrderId] = {
-      repairOrderNumber: data.repairOrderNumber,
-      customerName: null,
-    };
+  // Try to get repairOrderNumber (friendly number) for caching and messaging
+  const repairOrderNumber = data.repairOrderNumber || null;
+
+  // Cache customer name when available, keyed by repairOrderNumber
+  if (repairOrderNumber && data.customer?.firstName && data.customer?.lastName) {
+    roCustomerCache[repairOrderNumber] = `${data.customer.firstName} ${data.customer.lastName}`;
   }
 
-  // Retrieve cached info if exists
-  const cached = roCache[data.id || data.repairOrderId] || {};
-  const cachedRoNumber = cached.repairOrderNumber || data.repairOrderNumber || 'Unknown';
-  const cachedCustomerName = cached.customerName || 'Unknown Customer';
-
-  // Use customer name from payload or fallback to cached or parsed name
+  // Get customer name from cache by repairOrderNumber or fallback methods
   let customerName = 'Unknown Customer';
-  if (data.customer?.firstName && data.customer?.lastName) {
+  if (repairOrderNumber && roCustomerCache[repairOrderNumber]) {
+    customerName = roCustomerCache[repairOrderNumber];
+  } else if (data.customer?.firstName && data.customer?.lastName) {
     customerName = `${data.customer.firstName} ${data.customer.lastName}`;
-  } else if (cachedCustomerName !== 'Unknown Customer') {
-    customerName = cachedCustomerName;
   } else {
-    // Fallback: try to parse from event string
-    const match = event.match(/^([A-Z][a-z]+\s[A-Z][a-z]+)\s(viewed|approved|declined|marked|paid)/i);
+    const match = event.match(/^([A-Z][a-z]+\s[A-Z][a-z]+)\s(viewed|approved|declined|marked|paid|completed|made)/i);
     if (match && match[1]) {
       customerName = match[1];
     }
@@ -58,33 +45,46 @@ app.post('/tekmetric-webhook', async (req, res) => {
   try {
     // Estimate Viewed
     if (event.toLowerCase().includes('estimate') && event.toLowerCase().includes('viewed')) {
-      message = `🧐 **Estimate Viewed**\n${customerName} viewed estimate for RO #${cachedRoNumber}`;
+      message = `🧐 **Estimate Viewed**\n${customerName} viewed estimate for RO #${repairOrderNumber || 'Unknown'}`;
     }
-    // Work Approved / Declined
+
+    // Work Approved / Declined (based on jobs array)
     else if (event.toLowerCase().includes('approved') && event.toLowerCase().includes('declined')) {
       const approvedCount = data.jobs?.filter(job => job.authorized === true).length || 0;
       const declinedCount = data.jobs?.filter(job => job.authorized === false).length || 0;
-      message = `🔧 **Work Authorization**\n${customerName} approved ${approvedCount} job(s) and declined ${declinedCount} job(s) for RO #${cachedRoNumber}`;
+      message = `🔧 **Work Authorization**\n${customerName} approved ${approvedCount} job(s) and declined ${declinedCount} job(s) for RO #${repairOrderNumber || 'Unknown'}`;
     }
+
     // Repair Order Completed
     else if (data.repairOrderStatus?.name?.toLowerCase() === 'complete' || data.repairOrderStatus?.name?.toLowerCase() === 'completed') {
-      message = `🎉 **RO Completed**\nRO #${cachedRoNumber} for ${customerName} is marked as completed.`;
+      message = `🎉 **RO Completed**\nRO #${repairOrderNumber || 'Unknown'} for ${customerName} is marked as completed.`;
     }
+
+    // Payment Received (fully paid)
+    else if (data.amountPaid && data.amountPaid > 0 && data.totalSales && data.amountPaid === data.totalSales) {
+      const total = (data.amountPaid / 100).toFixed(2);
+      message = `💳 **Payment Received**\nRO #${repairOrderNumber || 'Unknown'} for ${customerName} has been paid in full.\nTotal: $${total}`;
+    }
+
+    // Payment Made (partial or any payment event)
+    else if (event.toLowerCase().includes('payment made')) {
+      // Try to get repairOrderNumber from cache via data.repairOrderId if possible
+      // We do not have direct mapping here, so use repairOrderNumber cached or Unknown
+      const amount = data.amount ? (data.amount / 100).toFixed(2) : 'Unknown';
+      const payer = data.payerName || customerName;
+      message = `💵 **Payment Made**\n${payer} paid $${amount} for RO #${repairOrderNumber || 'Unknown'}`;
+    }
+
     // Inspection Completed
     else if (event.toLowerCase().includes('inspection') && event.toLowerCase().includes('complete')) {
-      message = `🔍 **Inspection Complete**\n${data.name || 'Inspection'} completed for RO #${cachedRoNumber} for ${customerName}`;
+      message = `🔍 **Inspection Complete**\n${data.name || 'Inspection'} completed for RO #${repairOrderNumber || 'Unknown'} for ${customerName}`;
     }
+
     // Part Received
     else if (event.toLowerCase().includes('purchase order') && event.toLowerCase().includes('received')) {
       const poMatch = event.match(/Purchase Order #(\d+)/);
       const poNumber = poMatch ? poMatch[1] : 'Unknown';
       message = `📦 **Part Received**\nPurchase Order #${poNumber} marked as received.`;
-    }
-    // Payment Made
-    else if (event.toLowerCase().includes('payment made')) {
-      const payer = data.payerName || customerName;
-      const amount = data.amount ? (data.amount / 100).toFixed(2) : 'Unknown';
-      message = `💵 **Payment Made**\n${payer} paid $${amount} for RO #${cachedRoNumber}`;
     }
 
     if (message) {
