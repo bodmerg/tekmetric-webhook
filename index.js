@@ -12,17 +12,26 @@ if (!DISCORD_WEBHOOK_URL) {
   process.exit(1);
 }
 
-async function sendDiscordMessage(content) {
+function toUSD(value) {
+  return `$${(value / 100).toFixed(2)}`;
+}
+
+async function sendDiscordEmbed({ title, description = '', fields = [], color = 0x2f3136 }) {
   try {
-    const res = await fetch(DISCORD_WEBHOOK_URL, {
+    await fetch(DISCORD_WEBHOOK_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({
+        embeds: [
+          {
+            title,
+            description,
+            color,
+            fields
+          }
+        ]
+      })
     });
-
-    if (!res.ok) {
-      console.error('❌ Discord error:', res.statusText);
-    }
   } catch (err) {
     console.error('❌ Discord send error:', err.message);
   }
@@ -34,51 +43,80 @@ app.post('/webhook', async (req, res) => {
   console.log('📩 Event received:', event);
 
   try {
-    let message = null;
+    const roNumber = data.repairOrderNumber || data.repairOrderId || data.id;
+    let embedPayload = null;
 
     if (event.includes('Inspection marked complete')) {
-      message = `🛠️ **${data.name}** for RO #${data.repairOrderId} has been marked complete.`;
+      embedPayload = {
+        title: '🔍 Inspection Completed',
+        description: `**${data.name}** for RO #${roNumber} has been completed.`,
+        color: 0x1abc9c
+      };
 
     } else if (event.includes('Repair Order') && event.includes('completed')) {
-      const ro = data.repairOrderNumber || data.id;
-      const name = `RO #${ro}`;
-      const total = data.totalSales || 0;
-      const labor = data.laborSales || 0;
-      const parts = data.partsSales || 0;
-      const fees = data.feeTotal || 0;
-      message = `✅ **${name}** has been completed.\n• Labor: $${labor}\n• Parts: $${parts}\n• Fees: $${fees}\n• **Total: $${total}**`;
+      embedPayload = {
+        title: '✅ Work Completed',
+        description: `RO #${roNumber} has been marked as completed.`,
+        color: 0x57f287,
+        fields: [
+          { name: 'Labor', value: toUSD(data.laborSales || 0), inline: true },
+          { name: 'Parts', value: toUSD(data.partsSales || 0), inline: true },
+          { name: 'Fees', value: toUSD(data.feeTotal || 0), inline: true },
+          { name: 'Total', value: `**${toUSD(data.totalSales || 0)}**`, inline: true }
+        ]
+      };
 
     } else if (event.includes('Payment made')) {
-      const amount = data.amount || 0;
-      const paidInFull = data.paymentStatus === 'SUCCEEDED';
-      const ro = data.repairOrderId || 'Unknown';
-      message = `💵 Payment of $${amount} received for RO #${ro} (${paidInFull ? 'Paid in full' : 'Partial'}).`;
+      embedPayload = {
+        title: '💵 Payment Received',
+        description: `Payment for RO #${roNumber}`,
+        color: 0xfee75c,
+        fields: [
+          { name: 'Amount', value: toUSD(data.amount || 0), inline: true },
+          { name: 'Status', value: data.paymentStatus === 'SUCCEEDED' ? '✅ Paid in full' : '⚠️ Partial', inline: true },
+          { name: 'Method', value: data.paymentType?.name || 'Unknown', inline: true }
+        ]
+      };
 
     } else if (event.includes('approved') && event.includes('job')) {
       const approved = data.jobs.filter(j => j.authorized).length;
       const declined = data.jobs.length - approved;
-      const ro = data.repairOrderNumber;
       const customer = `${data.customer.firstName} ${data.customer.lastName}`;
-      message = `🛠️ **${customer}** approved **${approved}** job(s) and declined **${declined}** for RO #${ro}.`;
+
+      embedPayload = {
+        title: '🛠️ Work Authorization',
+        description: `Customer **${customer}** responded to jobs for RO #${roNumber}`,
+        color: 0x3498db,
+        fields: [
+          { name: 'Approved Jobs', value: `${approved}`, inline: true },
+          { name: 'Declined Jobs', value: `${declined}`, inline: true }
+        ]
+      };
 
     } else if (event.includes('viewed estimate')) {
-      const ro = data.repairOrderNumber;
       const customer = `${data.customer.firstName} ${data.customer.lastName}`;
-      message = `👀 **${customer}** viewed the estimate for RO #${ro}.`;
+      embedPayload = {
+        title: '👀 Estimate Viewed',
+        description: `Customer **${customer}** viewed the estimate for RO #${roNumber}`,
+        color: 0x5865f2
+      };
 
     } else if (event.includes('Purchase Order') && event.includes('received')) {
-      const po = data.purchaseOrderId;
-      message = `📦 Purchase Order #${po} marked as received.`;
+      embedPayload = {
+        title: '📦 Parts Received',
+        description: `Purchase Order #${data.purchaseOrderId} has been marked as received.`,
+        color: 0x9b59b6
+      };
 
     } else {
       console.log('⚠️ Unhandled event:', event);
     }
 
-    if (message) await sendDiscordMessage(message);
+    if (embedPayload) await sendDiscordEmbed(embedPayload);
     res.status(200).send('OK');
   } catch (err) {
     console.error('❌ Handler error:', err.message);
-    res.status(500).send('Internal error');
+    res.status(500).send('Internal Server Error');
   }
 });
 
