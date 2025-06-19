@@ -1,24 +1,14 @@
 {
-  "name": "tekmetric-discord-webhook",
+  "name": "tekmetric-webhook-listener",
   "version": "1.0.0",
-  "description": "Webhook listener that sends formatted Tekmetric events to Discord.",
+  "description": "Webhook listener for Tekmetric events with Discord integration",
   "main": "index.js",
+  "type": "module",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "axios": "^1.6.8",
-    "express": "^4.19.2"
-  },
-  "engines": {
-    "node": ">=16"
-  },
-  "keywords": [
-    "tekmetric",
-    "discord",
-    "webhook",
-    "auto-repair"
-  ],
-  "author": "Grant Bodmer",
-  "license": "MIT"
+    "express": "^4.19.2",
+    "node-fetch": "^3.3.2"
+  }
 }
