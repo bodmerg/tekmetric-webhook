@@ -8,7 +8,7 @@ const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const PORT = process.env.PORT || 3000;
 
 if (!DISCORD_WEBHOOK_URL) {
-  console.error('Error: DISCORD_WEBHOOK_URL environment variable not set');
+  console.error('❌ DISCORD_WEBHOOK_URL not set');
   process.exit(1);
 }
 
@@ -21,107 +21,64 @@ async function sendDiscordMessage(content) {
     });
 
     if (!res.ok) {
-      console.error('Error sending message to Discord:', res.statusText);
+      console.error('❌ Discord error:', res.statusText);
     }
-  } catch (error) {
-    console.error('Error sending message to Discord:', error);
+  } catch (err) {
+    console.error('❌ Discord send error:', err.message);
   }
 }
 
 app.post('/webhook', async (req, res) => {
-  const payload = req.body;
-  const event = payload.event || '';
-  const data = payload.data || {};
+  const { event, data } = req.body;
 
-  console.log(`✅ Received webhook event: ${event}`);
+  console.log('📩 Event received:', event);
 
   try {
+    let message = null;
+
     if (event.includes('Inspection marked complete')) {
-      // Simplified inspection confirmation message
-      const inspectionName = data.name || 'Inspection';
-      const repairOrderNumber = data.repairOrderId || 'Unknown RO';
-      const completedDate = data.completedDate
-        ? new Date(data.completedDate).toLocaleString()
-        : 'Unknown Date';
+      message = `🛠️ **${data.name}** for RO #${data.repairOrderId} has been marked complete.`;
 
-      const message = `✅ **${inspectionName}** for Repair Order #${repairOrderNumber} has been completed on ${completedDate}.`;
+    } else if (event.includes('Repair Order') && event.includes('completed')) {
+      const ro = data.repairOrderNumber || data.id;
+      const name = `RO #${ro}`;
+      const total = data.totalSales || 0;
+      const labor = data.laborSales || 0;
+      const parts = data.partsSales || 0;
+      const fees = data.feeTotal || 0;
+      message = `✅ **${name}** has been completed.\n• Labor: $${labor}\n• Parts: $${parts}\n• Fees: $${fees}\n• **Total: $${total}**`;
 
-      await sendDiscordMessage(message);
-    } else if (event.includes('completed by')) {
-      // Work Completed event
-      const roNumber = data.repairOrderNumber || (data.id ? `#${data.id}` : 'Unknown RO');
-      const customerName = (data.customer && `${data.customer.firstName} ${data.customer.lastName}`) || 'Customer';
-      const total = data.totalSales != null ? `$${(data.totalSales / 100).toFixed(2)}` : 'N/A';
+    } else if (event.includes('Payment made')) {
+      const amount = data.amount || 0;
+      const paidInFull = data.paymentStatus === 'SUCCEEDED';
+      const ro = data.repairOrderId || 'Unknown';
+      message = `💵 Payment of $${amount} received for RO #${ro} (${paidInFull ? 'Paid in full' : 'Partial'}).`;
 
-      // Build itemized job list if available
-      let jobList = '';
-      if (data.jobs && Array.isArray(data.jobs)) {
-        jobList = data.jobs.map(job => {
-          const authorized = job.authorized ? '✅' : '❌';
-          const jobTotal = job.subtotal != null ? `$${(job.subtotal / 100).toFixed(2)}` : 'N/A';
-          return `• ${job.name} - ${jobTotal} ${authorized}`;
-        }).join('\n');
-      }
+    } else if (event.includes('approved') && event.includes('job')) {
+      const approved = data.jobs.filter(j => j.authorized).length;
+      const declined = data.jobs.length - approved;
+      const ro = data.repairOrderNumber;
+      const customer = `${data.customer.firstName} ${data.customer.lastName}`;
+      message = `🛠️ **${customer}** approved **${approved}** job(s) and declined **${declined}** for RO #${ro}.`;
 
-      const message =
-        `🛠️ Work Completed for Repair Order #${roNumber}\n` +
-        `Customer: **${customerName}**\n` +
-        `${jobList ? `\n**Jobs:**\n${jobList}\n` : ''}` +
-        `Total: **${total}**`;
-
-      await sendDiscordMessage(message);
-    } else if (event.startsWith('Payment made')) {
-      // Payment event
-      const payer = data.payerName || 'Customer';
-      const amount = data.amount != null ? `$${(data.amount / 100).toFixed(2)}` : 'N/A';
-      const roNumber = data.repairOrderId || 'Unknown RO';
-
-      const message =
-        `💰 Payment received from **${payer}**\n` +
-        `Amount: **${amount}**\n` +
-        `Applied to Repair Order #${roNumber}`;
-
-      await sendDiscordMessage(message);
-    } else if (event.includes('approved') && event.includes('Repair Order')) {
-      // Work Authorization event
-      const roNumber = data.repairOrderNumber || 'Unknown RO';
-      const customerName = data.customer ? `${data.customer.firstName} ${data.customer.lastName}` : 'Customer';
-      const jobsApproved = data.jobs ? data.jobs.filter(j => j.authorized).length : 0;
-      const jobsDeclined = data.jobs ? data.jobs.filter(j => !j.authorized).length : 0;
-
-      const message =
-        `✅ Work Authorization update for Repair Order #${roNumber}\n` +
-        `Customer: **${customerName}**\n` +
-        `Jobs Approved: **${jobsApproved}**\n` +
-        `Jobs Declined: **${jobsDeclined}**`;
-
-      await sendDiscordMessage(message);
     } else if (event.includes('viewed estimate')) {
-      // Customer viewed estimate event
-      const roNumber = data.repairOrderNumber || 'Unknown RO';
-      const customerName = data.customer ? `${data.customer.firstName} ${data.customer.lastName}` : 'Customer';
+      const ro = data.repairOrderNumber;
+      const customer = `${data.customer.firstName} ${data.customer.lastName}`;
+      message = `👀 **${customer}** viewed the estimate for RO #${ro}.`;
 
-      const message =
-        `👀 Estimate viewed by **${customerName}** for Repair Order #${roNumber}`;
-
-      await sendDiscordMessage(message);
     } else if (event.includes('Purchase Order') && event.includes('received')) {
-      // Purchase order received event
-      const poNumber = data.purchaseOrderId || 'Unknown PO';
+      const po = data.purchaseOrderId;
+      message = `📦 Purchase Order #${po} marked as received.`;
 
-      const message =
-        `📦 Purchase Order #${poNumber} has been marked as received.`;
-
-      await sendDiscordMessage(message);
     } else {
-      // Ignore or log other events
-      console.log(`⚠️ Unhandled event type: ${event}`);
+      console.log('⚠️ Unhandled event:', event);
     }
 
+    if (message) await sendDiscordMessage(message);
     res.status(200).send('OK');
-  } catch (error) {
-    console.error('Error handling webhook:', error);
-    res.status(500).send('Server error');
+  } catch (err) {
+    console.error('❌ Handler error:', err.message);
+    res.status(500).send('Internal error');
   }
 });
 
