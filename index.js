@@ -4,73 +4,39 @@ import fetch from 'node-fetch';
 const app = express();
 app.use(express.json());
 
+const PORT = process.env.PORT || 10000;
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
-const PORT = process.env.PORT || 3000;
 
-if (!DISCORD_WEBHOOK_URL) {
-  console.error('❌ DISCORD_WEBHOOK_URL not set');
-  process.exit(1);
-}
-
-function toUSD(value) {
-  return `$${(value / 100).toFixed(2)}`;
-}
-
-function getRONumber(data) {
-  if (data.repairOrderNumber) return data.repairOrderNumber;
-  if (data.repairOrder && data.repairOrder.repairOrderNumber) return data.repairOrder.repairOrderNumber;
-  if (typeof data.repairOrderId === 'number') return data.repairOrderId;
-  if (typeof data.id === 'number') return data.id;
-  return 'Unknown';
-}
-
-async function sendDiscordEmbed({ title, description = '', fields = [], color = 0x2f3136 }) {
-  try {
-    await fetch(DISCORD_WEBHOOK_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        embeds: [
-          {
-            title,
-            description,
-            color,
-            fields,
-            timestamp: new Date().toISOString(),
-          },
-        ],
-      }),
-    });
-  } catch (err) {
-    console.error('❌ Discord send error:', err.message);
-  }
+// Helper to format numbers as USD currency
+function toUSD(amount) {
+  return `$${(amount / 100).toFixed(2)}`; // assumes amount is in cents
 }
 
 app.post('/webhook', async (req, res) => {
-  const { event, data } = req.body;
-
-  console.log('📩 Event received:', event);
-
   try {
-    const roNumber = getRONumber(data);
+    const { event, data } = req.body;
+
+    // Extract repair order number safely
+    const roNumber = data.repairOrderNumber || data.repairOrderId || 'Unknown';
+
+    // Get customer name if available
     const customerName =
       data.customer?.firstName && data.customer?.lastName
         ? `${data.customer.firstName} ${data.customer.lastName}`
-        : data.payerName || 'Unknown Customer';
+        : data.payerName || null;
 
     let embedPayload = null;
 
-    if (event.includes('Inspection marked complete')) {
-      embedPayload = {
-        title: '🔍 Inspection Completed',
-        description: `**${data.name}** for Repair Order #${roNumber} has been completed.`,
-        color: 0x1abc9c,
-      };
-    } else if (event.includes('Repair Order') && event.includes('completed')) {
+    if (event.includes('completed')) {
+      // Work Completed event
+      const description = customerName
+        ? `Repair Order #${roNumber} for customer **${customerName}** has been marked as completed.`
+        : `Repair Order #${roNumber} has been marked as completed.`;
+
       embedPayload = {
         title: '✅ Work Completed',
-        description: `Repair Order #${roNumber} for customer **${customerName}** has been marked as completed.`,
-        color: 0x57f287,
+        description,
+        color: 0x2ecc71, // Emerald Green
         fields: [
           { name: 'Labor', value: toUSD(data.laborSales || 0), inline: true },
           { name: 'Parts', value: toUSD(data.partsSales || 0), inline: true },
@@ -79,53 +45,86 @@ app.post('/webhook', async (req, res) => {
         ],
       };
     } else if (event.includes('Payment made')) {
+      // Payment event
+      const description = customerName
+        ? `Payment of **${toUSD(data.amount || 0)}** received from **${customerName}** for Repair Order #${roNumber}.`
+        : `Payment of **${toUSD(data.amount || 0)}** received for Repair Order #${roNumber}.`;
+
       embedPayload = {
-        title: '💵 Payment Received',
-        description: `Payment received for Repair Order #${roNumber}`,
-        color: 0xfee75c,
+        title: '💰 Payment Received',
+        description,
+        color: 0xf39c12, // Orange
         fields: [
           { name: 'Amount', value: toUSD(data.amount || 0), inline: true },
-          {
-            name: 'Status',
-            value: data.paymentStatus === 'SUCCEEDED' ? '✅ Paid in full' : '⚠️ Partial',
-            inline: true,
-          },
-          { name: 'Method', value: data.paymentType?.name || 'Unknown', inline: true },
+          { name: 'Payment Type', value: data.paymentType?.name || 'Unknown', inline: true },
+          { name: 'Status', value: data.paymentStatus || 'Unknown', inline: true },
         ],
       };
-    } else if (event.includes('approved') && event.includes('job')) {
-      const approved = data.jobs.filter((j) => j.authorized).length;
-      const declined = data.jobs.length - approved;
+    } else if (event.includes('approved') || event.includes('declined')) {
+      // Work Authorization event
+      const approvedJobs = data.jobs?.filter((job) => job.authorized).length || 0;
+      const declinedJobs = (data.jobs?.length || 0) - approvedJobs;
+
+      const description = customerName
+        ? `Customer **${customerName}** responded to jobs for Repair Order #${roNumber}`
+        : `Customer responded to jobs for Repair Order #${roNumber}`;
 
       embedPayload = {
         title: '🛠️ Work Authorization',
-        description: `Customer **${customerName}** responded to jobs for Repair Order #${roNumber}`,
-        color: 0x3498db,
+        description,
+        color: 0x3498db, // Bright Blue
         fields: [
-          { name: 'Approved Jobs', value: `${approved}`, inline: true },
-          { name: 'Declined Jobs', value: `${declined}`, inline: true },
+          { name: 'Approved Jobs', value: `${approvedJobs}`, inline: true },
+          { name: 'Declined Jobs', value: `${declinedJobs}`, inline: true },
         ],
       };
     } else if (event.includes('viewed estimate')) {
+      // Estimate Viewed event
+      const description = customerName
+        ? `Customer **${customerName}** viewed the estimate for Repair Order #${roNumber}`
+        : `An estimate was viewed for Repair Order #${roNumber}`;
+
       embedPayload = {
-        title: '👀 Estimate Viewed',
-        description: `Customer **${customerName}** viewed the estimate for Repair Order #${roNumber}`,
-        color: 0x5865f2,
+        title: '👁️ Estimate Viewed',
+        description,
+        color: 0x9b59b6, // Amethyst Purple
+      };
+    } else if (event.includes('Inspection marked complete')) {
+      // Inspection completed - simple confirmation message
+      embedPayload = {
+        title: '🔍 Inspection Completed',
+        description: `Inspection for Repair Order #${roNumber} has been marked complete.`,
+        color: 0xe67e22, // Carrot Orange
       };
     } else if (event.includes('Purchase Order') && event.includes('received')) {
+      // Purchase order received
       embedPayload = {
-        title: '📦 Parts Received',
+        title: '📦 Purchase Order Received',
         description: `Purchase Order #${data.purchaseOrderId} has been marked as received.`,
-        color: 0x9b59b6,
+        color: 0x7f8c8d, // Gray
       };
     } else {
-      console.log('⚠️ Unhandled event:', event);
+      // Unknown event
+      embedPayload = {
+        title: 'ℹ️ Tekmetric Notification',
+        description: event,
+        color: 0x95a5a6, // Light Gray-Blue
+      };
     }
 
-    if (embedPayload) await sendDiscordEmbed(embedPayload);
+    // Send the embed to Discord webhook
+    if (embedPayload) {
+      await fetch(DISCORD_WEBHOOK_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ embeds: [embedPayload] }),
+      });
+      console.log(`📩 Sent notification for event: ${event}`);
+    }
+
     res.status(200).send('OK');
-  } catch (err) {
-    console.error('❌ Handler error:', err.message);
+  } catch (error) {
+    console.error('❌ Error handling webhook:', error);
     res.status(500).send('Internal Server Error');
   }
 });
