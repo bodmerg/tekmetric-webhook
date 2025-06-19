@@ -1,118 +1,131 @@
-const express = require('express');
-const axios = require('axios');
+import express from 'express';
+import fetch from 'node-fetch';
+
 const app = express();
-const PORT = process.env.PORT || 10000;
-
-const DISCORD_WEBHOOK_URL = 'YOUR_DISCORD_WEBHOOK_URL_HERE';
-
 app.use(express.json());
 
-// Keep-alive ping handler
-app.get('/webhook', (req, res) => {
-  console.log('💡 Keep-alive ping received');
-  res.status(200).send('OK');
-});
+const PORT = process.env.PORT || 10000;
+const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 
-// Utility: Format currency
-const formatCurrency = (value) => `$${(value / 100).toFixed(2)}`;
+// Helper to format numbers as USD currency
+function toUSD(amount) {
+  return `$${(amount / 100).toFixed(2)}`; // assumes amount is in cents
+}
 
-// Utility: Build Discord embed
-const buildEmbed = (title, description, color) => ({
-  embeds: [
-    {
-      title,
-      description,
-      color,
-      timestamp: new Date().toISOString(),
-    }
-  ]
-});
-
-// Event handler
 app.post('/webhook', async (req, res) => {
-  const payload = req.body;
-  if (!payload || !payload.event || !payload.data) {
-    console.log('❌ Invalid payload');
-    return res.status(400).send('Bad Request');
-  }
-
-  const { event, data } = payload;
-  let embed;
-
   try {
-    switch (event) {
-      case 'Grant Bodmer viewed estimate for Repair Order #12558': {
-        embed = buildEmbed(
-          '📄 Estimate Viewed',
-          `Customer ${data.customer.firstName} ${data.customer.lastName} viewed estimate for Repair Order #${data.repairOrderNumber}`,
-          0x3498db
-        );
-        break;
-      }
+    const { event, data } = req.body;
 
-      case 'Grant Bodmer approved 1 job(s) and declined 0 job(s) for Repair Order #12558': {
-        embed = buildEmbed(
-          '🛠️ Work Authorization',
-          `Customer ${data.customer?.firstName || 'Unknown'} ${data.customer?.lastName || 'Customer'} responded to jobs for Repair Order #${data.repairOrderNumber}\nApproved Jobs: ${data.jobs.filter(j => j.authorized).length}\nDeclined Jobs: ${data.jobs.filter(j => !j.authorized).length}`,
-          0xf1c40f
-        );
-        break;
-      }
+    // Extract repair order number safely
+    const roNumber = data.repairOrderNumber || data.repairOrderId || 'Unknown';
 
-      case 'Repair Order #12558 completed by grantdigitalart@gmail.com': {
-        const customerName = data.customerName || 'Unknown Customer';
-        embed = buildEmbed(
-          '✅ Work Completed',
-          `Repair Order #${data.repairOrderNumber || data.id} for customer ${customerName} has been marked as completed.\n\n` +
-          `Labor: ${formatCurrency(data.laborSales)}\nParts: ${formatCurrency(data.partsSales)}\nFees: ${formatCurrency(data.feeTotal)}\nTotal: ${formatCurrency(data.totalSales)}`,
-          0x2ecc71
-        );
-        break;
-      }
+    // Get customer name if available
+    const customerName =
+      data.customer?.firstName && data.customer?.lastName
+        ? `${data.customer.firstName} ${data.customer.lastName}`
+        : data.payerName || null;
 
-      case 'Payment made by Grant Bodmer': {
-        const roNumber = data.repairOrderNumber || data.repairOrderId;
-        const amount = formatCurrency(data.amount);
-        embed = buildEmbed(
-          '💵 Payment Received',
-          `A payment of ${amount} was made on Repair Order #${roNumber}\nPayment Method: ${data.paymentType.name}`,
-          0x9b59b6
-        );
-        break;
-      }
+    let embedPayload = null;
 
-      case 'Inspection marked complete by grantdigitalart@gmail.com': {
-        embed = buildEmbed(
-          '🔍 Inspection Completed',
-          `Inspection "${data.name}" was completed for Repair Order #${data.repairOrderId}`,
-          0xe67e22
-        );
-        break;
-      }
+    if (event.includes('completed')) {
+      // Work Completed event
+      const description = customerName
+        ? `Repair Order #${roNumber} for customer **${customerName}** has been marked as completed.`
+        : `Repair Order #${roNumber} has been marked as completed.`;
 
-      case 'Purchase Order #4321 marked as received': {
-        embed = buildEmbed(
-          '📦 Parts Order Received',
-          `Purchase Order #${data.purchaseOrderId} has been marked as received.`,
-          0x1abc9c
-        );
-        break;
-      }
+      embedPayload = {
+        title: '✅ Work Completed',
+        description,
+        color: 0x2ecc71, // Emerald Green
+        fields: [
+          { name: 'Labor', value: toUSD(data.laborSales || 0), inline: true },
+          { name: 'Parts', value: toUSD(data.partsSales || 0), inline: true },
+          { name: 'Fees', value: toUSD(data.feeTotal || 0), inline: true },
+          { name: 'Total', value: `**${toUSD(data.totalSales || 0)}**`, inline: true },
+        ],
+      };
+    } else if (event.includes('Payment made')) {
+      // Payment event
+      const description = customerName
+        ? `Payment of **${toUSD(data.amount || 0)}** received from **${customerName}** for Repair Order #${roNumber}.`
+        : `Payment of **${toUSD(data.amount || 0)}** received for Repair Order #${roNumber}.`;
 
-      default:
-        embed = buildEmbed(
-          '📬 New Event',
-          `Received event: ${event}`,
-          0x95a5a6
-        );
+      embedPayload = {
+        title: '💰 Payment Received',
+        description,
+        color: 0xf39c12, // Orange
+        fields: [
+          { name: 'Amount', value: toUSD(data.amount || 0), inline: true },
+          { name: 'Payment Type', value: data.paymentType?.name || 'Unknown', inline: true },
+          { name: 'Status', value: data.paymentStatus || 'Unknown', inline: true },
+        ],
+      };
+    } else if (event.includes('approved') || event.includes('declined')) {
+      // Work Authorization event
+      const approvedJobs = data.jobs?.filter((job) => job.authorized).length || 0;
+      const declinedJobs = (data.jobs?.length || 0) - approvedJobs;
+
+      const description = customerName
+        ? `Customer **${customerName}** responded to jobs for Repair Order #${roNumber}`
+        : `Customer responded to jobs for Repair Order #${roNumber}`;
+
+      embedPayload = {
+        title: '🛠️ Work Authorization',
+        description,
+        color: 0x3498db, // Bright Blue
+        fields: [
+          { name: 'Approved Jobs', value: `${approvedJobs}`, inline: true },
+          { name: 'Declined Jobs', value: `${declinedJobs}`, inline: true },
+        ],
+      };
+    } else if (event.includes('viewed estimate')) {
+      // Estimate Viewed event
+      const description = customerName
+        ? `Customer **${customerName}** viewed the estimate for Repair Order #${roNumber}`
+        : `An estimate was viewed for Repair Order #${roNumber}`;
+
+      embedPayload = {
+        title: '👁️ Estimate Viewed',
+        description,
+        color: 0x9b59b6, // Amethyst Purple
+      };
+    } else if (event.includes('Inspection marked complete')) {
+      // Inspection completed - simple confirmation message
+      embedPayload = {
+        title: '🔍 Inspection Completed',
+        description: `Inspection for Repair Order #${roNumber} has been marked complete.`,
+        color: 0xe67e22, // Carrot Orange
+      };
+    } else if (event.includes('Purchase Order') && event.includes('received')) {
+      // Purchase order received
+      embedPayload = {
+        title: '📦 Purchase Order Received',
+        description: `Purchase Order #${data.purchaseOrderId} has been marked as received.`,
+        color: 0x7f8c8d, // Gray
+      };
+    } else {
+      // Unknown event
+      embedPayload = {
+        title: 'ℹ️ Tekmetric Notification',
+        description: event,
+        color: 0x95a5a6, // Light Gray-Blue
+      };
     }
 
-    await axios.post(DISCORD_WEBHOOK_URL, embed);
-    console.log(`📤 Sent Discord message for event: ${event}`);
+    // Send the embed to Discord webhook
+    if (embedPayload) {
+      await fetch(DISCORD_WEBHOOK_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ embeds: [embedPayload] }),
+      });
+      console.log(`📩 Sent notification for event: ${event}`);
+    }
+
     res.status(200).send('OK');
   } catch (error) {
-    console.error('❌ Error sending message to Discord:', error);
-    res.status(500).send('Failed to send message');
+    console.error('❌ Error handling webhook:', error);
+    res.status(500).send('Internal Server Error');
   }
 });
 
