@@ -16,6 +16,15 @@ function toUSD(value) {
   return `$${(value / 100).toFixed(2)}`;
 }
 
+// Helper to get RO Number from known places in data
+function getRONumber(data) {
+  if (data.repairOrderNumber) return data.repairOrderNumber;
+  if (data.repairOrder && data.repairOrder.repairOrderNumber) return data.repairOrder.repairOrderNumber;
+  if (data.repairOrderId && typeof data.repairOrderId === 'number') return data.repairOrderId;
+  if (data.id && typeof data.id === 'number') return data.id;
+  return 'Unknown';
+}
+
 async function sendDiscordEmbed({ title, description = '', fields = [], color = 0x2f3136 }) {
   try {
     await fetch(DISCORD_WEBHOOK_URL, {
@@ -27,7 +36,8 @@ async function sendDiscordEmbed({ title, description = '', fields = [], color = 
             title,
             description,
             color,
-            fields
+            fields,
+            timestamp: new Date().toISOString()
           }
         ]
       })
@@ -43,20 +53,20 @@ app.post('/webhook', async (req, res) => {
   console.log('📩 Event received:', event);
 
   try {
-    const roNumber = data.repairOrderNumber || data.repairOrderId || data.id;
+    const roNumber = getRONumber(data);
     let embedPayload = null;
 
     if (event.includes('Inspection marked complete')) {
       embedPayload = {
         title: '🔍 Inspection Completed',
-        description: `**${data.name}** for RO #${roNumber} has been completed.`,
+        description: `**${data.name}** for Repair Order #${roNumber} has been completed.`,
         color: 0x1abc9c
       };
 
     } else if (event.includes('Repair Order') && event.includes('completed')) {
       embedPayload = {
         title: '✅ Work Completed',
-        description: `RO #${roNumber} has been marked as completed.`,
+        description: `Repair Order #${roNumber} has been marked as completed.`,
         color: 0x57f287,
         fields: [
           { name: 'Labor', value: toUSD(data.laborSales || 0), inline: true },
@@ -69,7 +79,7 @@ app.post('/webhook', async (req, res) => {
     } else if (event.includes('Payment made')) {
       embedPayload = {
         title: '💵 Payment Received',
-        description: `Payment for RO #${roNumber}`,
+        description: `Payment for Repair Order #${roNumber}`,
         color: 0xfee75c,
         fields: [
           { name: 'Amount', value: toUSD(data.amount || 0), inline: true },
@@ -81,11 +91,11 @@ app.post('/webhook', async (req, res) => {
     } else if (event.includes('approved') && event.includes('job')) {
       const approved = data.jobs.filter(j => j.authorized).length;
       const declined = data.jobs.length - approved;
-      const customer = `${data.customer.firstName} ${data.customer.lastName}`;
+      const customer = data.customer ? `${data.customer.firstName} ${data.customer.lastName}` : 'Unknown Customer';
 
       embedPayload = {
         title: '🛠️ Work Authorization',
-        description: `Customer **${customer}** responded to jobs for RO #${roNumber}`,
+        description: `Customer **${customer}** responded to jobs for Repair Order #${roNumber}`,
         color: 0x3498db,
         fields: [
           { name: 'Approved Jobs', value: `${approved}`, inline: true },
@@ -94,10 +104,10 @@ app.post('/webhook', async (req, res) => {
       };
 
     } else if (event.includes('viewed estimate')) {
-      const customer = `${data.customer.firstName} ${data.customer.lastName}`;
+      const customer = data.customer ? `${data.customer.firstName} ${data.customer.lastName}` : 'Unknown Customer';
       embedPayload = {
         title: '👀 Estimate Viewed',
-        description: `Customer **${customer}** viewed the estimate for RO #${roNumber}`,
+        description: `Customer **${customer}** viewed the estimate for Repair Order #${roNumber}`,
         color: 0x5865f2
       };
 
