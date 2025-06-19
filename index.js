@@ -10,6 +10,10 @@ app.use(express.json());
 app.post('/webhook', async (req, res) => {
   const { event, data } = req.body;
 
+  // Debug logs
+  console.log('✅ Received webhook event:', event);
+  console.log('📝 Full payload:', JSON.stringify(data, null, 2));
+
   let message = '';
 
   try {
@@ -33,16 +37,19 @@ app.post('/webhook', async (req, res) => {
         message = formatInspection(data);
         break;
       default:
+        console.log('⚠️ Unknown or ignored event.');
         return res.status(200).send('Ignored');
     }
 
     if (message) {
+      console.log('📤 Sending to Discord:
+', message);
       await axios.post(DISCORD_WEBHOOK_URL, { content: message });
     }
 
     res.status(200).send('OK');
   } catch (err) {
-    console.error('Webhook handler error:', err);
+    console.error('❌ Webhook handler error:', err);
     res.status(500).send('Error');
   }
 });
@@ -101,5 +108,6 @@ function formatInspection(data) {
 // Start the server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Webhook server listening on port ${PORT}`);
+  console.log(`🚀 Webhook server listening on port ${PORT}`);
 });
+
