@@ -1,126 +1,105 @@
+// Required packages
 const express = require('express');
 const axios = require('axios');
 const app = express();
 
-const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
-if (!DISCORD_WEBHOOK_URL) {
-  console.error('Error: DISCORD_WEBHOOK_URL environment variable not set.');
-  process.exit(1);
-}
+const DISCORD_WEBHOOK_URL = 'YOUR_DISCORD_WEBHOOK_URL_HERE';
 
 app.use(express.json());
 
-// Cache for customer name and RO number
-// Key: repairOrderNumber (friendly RO #), value: customerName string
-const customerCacheByRONumber = {};
-// Key: repairOrderId (internal ID), value: repairOrderNumber (friendly #)
-const roNumberCacheById = {};
+app.post('/webhook', async (req, res) => {
+  const { event, data } = req.body;
 
-app.post('/tekmetric-webhook', async (req, res) => {
-  const payload = req.body;
-  const event = payload.event || '';
-  const data = payload.data || {};
-
-  // Extract identifiers
-  const repairOrderNumber = data.repairOrderNumber || null;
-  const repairOrderId = data.id || data.repairOrderId || null;
-
-  // Try to get customer name from payload data
-  let customerName = 'Unknown Customer';
-  if (data.customer?.firstName && data.customer?.lastName) {
-    customerName = `${data.customer.firstName} ${data.customer.lastName}`;
-  }
-
-  // Cache customerName by repairOrderNumber if available
-  if (repairOrderNumber && customerName !== 'Unknown Customer') {
-    customerCacheByRONumber[repairOrderNumber] = customerName;
-    console.log(`[CACHE] Stored customer name "${customerName}" for RO #${repairOrderNumber}`);
-  }
-
-  // Cache repairOrderNumber by repairOrderId
-  if (repairOrderId && repairOrderNumber) {
-    roNumberCacheById[repairOrderId] = repairOrderNumber;
-    console.log(`[CACHE] Stored RO ID ${repairOrderId} => RO #${repairOrderNumber}`);
-  }
-
-  // For events that don’t have customer name or RO number directly,
-  // try to find from cache using repairOrderNumber or repairOrderId
-  // Priority order for customer name:
-  // 1. customerCacheByRONumber[repairOrderNumber]
-  // 2. Try event string parsing (only if event does NOT start with "Repair Order")
-  // 3. fallback 'Unknown Customer'
-
-  // Determine effective RO number
-  let effectiveRONumber = repairOrderNumber;
-  if (!effectiveRONumber && repairOrderId && roNumberCacheById[repairOrderId]) {
-    effectiveRONumber = roNumberCacheById[repairOrderId];
-    console.log(`[CACHE] Resolved RO #${effectiveRONumber} from RO ID ${repairOrderId}`);
-  }
-  if (!effectiveRONumber) {
-    effectiveRONumber = 'Unknown';
-  }
-
-  // Determine effective customer name
-  let effectiveCustomerName = customerName;
-  if (effectiveCustomerName === 'Unknown Customer') {
-    if (effectiveRONumber !== 'Unknown' && customerCacheByRONumber[effectiveRONumber]) {
-      effectiveCustomerName = customerCacheByRONumber[effectiveRONumber];
-      console.log(`[CACHE] Resolved customer name "${effectiveCustomerName}" from RO #${effectiveRONumber}`);
-    } else {
-      // Only parse if event string does NOT start with "Repair Order"
-      if (!event.startsWith('Repair Order')) {
-        const nameMatch = event.match(/^([A-Z][a-z]+ [A-Z][a-z]+)/);
-        if (nameMatch && nameMatch[1]) {
-          effectiveCustomerName = nameMatch[1];
-          console.log(`[NO CACHE] Parsed customer from event string: ${effectiveCustomerName}`);
-        } else {
-          console.log(`[NO CACHE] Customer name unknown`);
-        }
-      } else {
-        console.log(`[NO CACHE] Event starts with 'Repair Order', skip parsing customer name from event string`);
-      }
-    }
-  }
-
-  let message = null;
+  let message = '';
 
   try {
-    if (event.toLowerCase().includes('estimate') && event.toLowerCase().includes('viewed')) {
-      message = `🧐 **Estimate Viewed**\n${effectiveCustomerName} viewed estimate for RO #${effectiveRONumber}`;
-    } else if (event.toLowerCase().includes('approved') && event.toLowerCase().includes('declined')) {
-      const approvedCount = data.jobs?.filter(job => job.authorized === true).length || 0;
-      const declinedCount = data.jobs?.filter(job => job.authorized === false).length || 0;
-      message = `🔧 **Work Authorization**\n${effectiveCustomerName} approved ${approvedCount} job(s) and declined ${declinedCount} job(s) for RO #${effectiveRONumber}`;
-    } else if (data.repairOrderStatus?.name?.toLowerCase() === 'complete' || data.repairOrderStatus?.name?.toLowerCase() === 'completed') {
-      message = `🎉 **RO Completed**\nRO #${effectiveRONumber} for ${effectiveCustomerName} is marked as completed.`;
-    } else if (data.amountPaid && data.amountPaid > 0 && data.totalSales && data.amountPaid === data.totalSales) {
-      const total = (data.amountPaid / 100).toFixed(2);
-      message = `💳 **Payment Received**\nRO #${effectiveRONumber} for ${effectiveCustomerName} has been paid in full.\nTotal: $${total}`;
-    } else if (event.toLowerCase().includes('payment made')) {
-      const amount = data.amount ? (data.amount / 100).toFixed(2) : 'Unknown';
-      const payer = data.payerName || effectiveCustomerName;
-      message = `💵 **Payment Made**\n${payer} paid $${amount} for RO #${effectiveRONumber}`;
-    } else if (event.toLowerCase().includes('inspection') && event.toLowerCase().includes('complete')) {
-      message = `🔍 **Inspection Complete**\n${data.name || 'Inspection'} completed for RO #${effectiveRONumber} for ${effectiveCustomerName}`;
-    } else if (event.toLowerCase().includes('purchase order') && event.toLowerCase().includes('received')) {
-      const poMatch = event.match(/Purchase Order #(\d+)/);
-      const poNumber = poMatch ? poMatch[1] : 'Unknown';
-      message = `📦 **Part Received**\nPurchase Order #${poNumber} marked as received.`;
+    switch (true) {
+      case event.includes('completed'):
+        message = formatWorkCompleted(data);
+        break;
+      case event.includes('Payment made'):
+        message = formatPayment(data);
+        break;
+      case event.includes('approved') && event.includes('declined'):
+        message = formatAuthorization(data);
+        break;
+      case event.includes('viewed estimate'):
+        message = formatEstimateViewed(data);
+        break;
+      case event.includes('Purchase Order') && event.includes('received'):
+        message = formatPartsReceived(data);
+        break;
+      case event.includes('Inspection marked complete'):
+        message = formatInspection(data);
+        break;
+      default:
+        return res.status(200).send('Ignored');
     }
 
     if (message) {
       await axios.post(DISCORD_WEBHOOK_URL, { content: message });
-      console.log(`[MESSAGE SENT] ${message}`);
-      res.status(200).send('Notification sent to Discord');
-    } else {
-      console.log(`[NO HANDLER] Event: "${event}"`);
-      res.status(200).send('No matching event handled');
     }
+
+    res.status(200).send('OK');
   } catch (err) {
-    console.error('Webhook processing error:', err);
-    res.status(500).send('Error handling webhook');
+    console.error('Webhook handler error:', err);
+    res.status(500).send('Error');
   }
 });
 
+function formatWorkCompleted(data) {
+  const ro = data.repairOrderNumber;
+  const customerName = 'Grant Bodmer'; // Pull dynamically if added later
+  const completedDate = new Date(data.completedDate).toLocaleString();
+  const jobs = data.jobs.map(job => `- ${job.name}\n  - Labor Hours: ${job.laborHours}\n  - Labor Cost: $${job.laborTotal}`).join('\n');
+  const fees = data.fees.map(fee => `- ${fee.name}: $${fee.total}`).join('\n');
+  return `**🔧 Repair Order #${ro} - ${customerName}**\nWork has been completed.\nCompleted on: ${completedDate}\n\n**Services Performed:**\n${jobs}\n\n**Fees:**\n${fees}\n\n**Total Sales:** $${data.totalSales}`;
+}
+
+function formatPayment(data) {
+  const amount = data.amount;
+  const paidInFull = data.amount >= 2700 ? '✅ Paid in Full' : '⚠️ Partially Paid';
+  return `**🧾 Repair Order #${data.repairOrderId} - ${data.payerName}**\n💰 Payment Received: **$${amount}** (${data.paymentType.name})\n📅 Payment Date: ${new Date(data.paymentDate).toLocaleString()}\n${paidInFull}`;
+}
+
+function formatAuthorization(data) {
+  const approved = data.jobs.filter(job => job.authorized).length;
+  const declined = data.jobs.length - approved;
+  const name = `${data.customer.firstName} ${data.customer.lastName}`;
+  return `**✅ Repair Order #${data.repairOrderNumber} - ${name}**\nCustomer approved ${approved} job(s) and declined ${declined} job(s).`;
+}
+
+function formatEstimateViewed(data) {
+  const name = `${data.customer.firstName} ${data.customer.lastName}`;
+  return `**👀 Repair Order #${data.repairOrderNumber} - ${name}**\nCustomer viewed the estimate.`;
+}
+
+function formatPartsReceived(data) {
+  return `**📦 Purchase Order #${data.purchaseOrderId}**\nParts have been received for this order.`;
+}
+
+function formatInspection(data) {
+  const inspectionName = data.name;
+  const completedDate = new Date(data.completedDate).toLocaleString();
+  const ro = data.repairOrderId;
+  const customerName = 'Grant Bodmer'; // If available, replace with actual
+  const details = data.inspectionTasks.map(group => {
+    const tasks = group.tasks.map(task => {
+      let emoji = '✅';
+      if (task.inspectionRating === 'Fair') emoji = '⚠️';
+      else if (task.inspectionRating === 'Poor' || task.reported) emoji = '❌';
+      const status = task.inspectionRating || (task.reported ? 'Issue Found' : 'No Issues');
+      const finding = task.finding ? ` (${task.finding})` : '';
+      return `- ${task.name} — ${emoji} ${status}${finding}`;
+    }).join('\n');
+    return `**${group.title.trim()}**\n${tasks}`;
+  }).join('\n\n');
+
+  return `**🔍 Repair Order #${ro} - ${customerName}**\nInspection "**${inspectionName}**" has been completed.\nCompleted on: ${completedDate}\n\n**Inspection Details:**\n\n${details}`;
+}
+
+// Start the server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Tekmetric webhook listener running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Webhook server listening on port ${PORT}`);
+});
