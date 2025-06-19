@@ -112,7 +112,7 @@ function formatInspection(data) {
   return `**🔍 Repair Order #${ro} - ${customerName}**\nInspection "**${inspectionName}**" has been completed.\nCompleted on: ${completedDate}\n\n**Inspection Details:**\n\n${details}`;
 }
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`🚀 Webhook server listening on port ${PORT}`);
 });
