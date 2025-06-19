@@ -1,131 +1,90 @@
-import express from 'express';
-import fetch from 'node-fetch';
-
+const express = require('express');
+const axios = require('axios');
 const app = express();
+const PORT = process.env.PORT || 10000;
+
 app.use(express.json());
 
-const PORT = process.env.PORT || 10000;
-const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
+// 🟢 Keep-alive handler (GET)
+app.get('/webhook', (req, res) => {
+  console.log('🟢 Keep-alive ping received at /webhook');
+  res.status(200).send('Alive and kicking!');
+});
 
-// Helper to format numbers as USD currency
-function toUSD(amount) {
-  return `$${(amount / 100).toFixed(2)}`; // assumes amount is in cents
-}
-
+// 📨 Main webhook POST handler
 app.post('/webhook', async (req, res) => {
   try {
-    const { event, data } = req.body;
+    const eventData = req.body;
+    
+    console.log('📩 Event received:', eventData.event);
 
-    // Extract repair order number safely
-    const roNumber = data.repairOrderNumber || data.repairOrderId || 'Unknown';
+    // Prepare the embed based on event type
+    let embed = {
+      color: 0x00FF00, // Default to green, can adjust per event type
+      title: 'Webhook Event',
+      description: `Event: ${eventData.event}`,
+      fields: []
+    };
 
-    // Get customer name if available
-    const customerName =
-      data.customer?.firstName && data.customer?.lastName
-        ? `${data.customer.firstName} ${data.customer.lastName}`
-        : data.payerName || null;
+    // Process different types of events
+    switch (eventData.event) {
+      case 'Repair Order Created':
+        embed.title = 'New Repair Order';
+        embed.fields.push({
+          name: 'Repair Order #',
+          value: `#${eventData.data.repairOrderNumber}`,
+        });
+        break;
+      
+      case 'Work Completed':
+        embed.title = '✅ Work Completed';
+        embed.description = `Repair Order #${eventData.data.repairOrderNumber} for customer ${eventData.data.customer ? eventData.data.customer.firstName + ' ' + eventData.data.customer.lastName : 'Unknown Customer'} has been marked as completed.`;
+        embed.fields.push({
+          name: 'Labor',
+          value: `$${(eventData.data.laborSales / 100).toFixed(2)}`,
+        });
+        embed.fields.push({
+          name: 'Parts',
+          value: `$${(eventData.data.partsSales / 100).toFixed(2)}`,
+        });
+        embed.fields.push({
+          name: 'Fees',
+          value: `$${(eventData.data.feeTotal / 100).toFixed(2)}`,
+        });
+        embed.fields.push({
+          name: 'Total',
+          value: `$${((eventData.data.totalSales + eventData.data.feeTotal) / 100).toFixed(2)}`,
+        });
+        break;
 
-    let embedPayload = null;
+      case 'Payment made':
+        embed.title = '💵 Payment Received';
+        embed.fields.push({
+          name: 'Amount Paid',
+          value: `$${(eventData.data.amount / 100).toFixed(2)}`,
+        });
+        embed.fields.push({
+          name: 'Payment Method',
+          value: eventData.data.paymentType.name,
+        });
+        break;
 
-    if (event.includes('completed')) {
-      // Work Completed event
-      const description = customerName
-        ? `Repair Order #${roNumber} for customer **${customerName}** has been marked as completed.`
-        : `Repair Order #${roNumber} has been marked as completed.`;
-
-      embedPayload = {
-        title: '✅ Work Completed',
-        description,
-        color: 0x2ecc71, // Emerald Green
-        fields: [
-          { name: 'Labor', value: toUSD(data.laborSales || 0), inline: true },
-          { name: 'Parts', value: toUSD(data.partsSales || 0), inline: true },
-          { name: 'Fees', value: toUSD(data.feeTotal || 0), inline: true },
-          { name: 'Total', value: `**${toUSD(data.totalSales || 0)}**`, inline: true },
-        ],
-      };
-    } else if (event.includes('Payment made')) {
-      // Payment event
-      const description = customerName
-        ? `Payment of **${toUSD(data.amount || 0)}** received from **${customerName}** for Repair Order #${roNumber}.`
-        : `Payment of **${toUSD(data.amount || 0)}** received for Repair Order #${roNumber}.`;
-
-      embedPayload = {
-        title: '💰 Payment Received',
-        description,
-        color: 0xf39c12, // Orange
-        fields: [
-          { name: 'Amount', value: toUSD(data.amount || 0), inline: true },
-          { name: 'Payment Type', value: data.paymentType?.name || 'Unknown', inline: true },
-          { name: 'Status', value: data.paymentStatus || 'Unknown', inline: true },
-        ],
-      };
-    } else if (event.includes('approved') || event.includes('declined')) {
-      // Work Authorization event
-      const approvedJobs = data.jobs?.filter((job) => job.authorized).length || 0;
-      const declinedJobs = (data.jobs?.length || 0) - approvedJobs;
-
-      const description = customerName
-        ? `Customer **${customerName}** responded to jobs for Repair Order #${roNumber}`
-        : `Customer responded to jobs for Repair Order #${roNumber}`;
-
-      embedPayload = {
-        title: '🛠️ Work Authorization',
-        description,
-        color: 0x3498db, // Bright Blue
-        fields: [
-          { name: 'Approved Jobs', value: `${approvedJobs}`, inline: true },
-          { name: 'Declined Jobs', value: `${declinedJobs}`, inline: true },
-        ],
-      };
-    } else if (event.includes('viewed estimate')) {
-      // Estimate Viewed event
-      const description = customerName
-        ? `Customer **${customerName}** viewed the estimate for Repair Order #${roNumber}`
-        : `An estimate was viewed for Repair Order #${roNumber}`;
-
-      embedPayload = {
-        title: '👁️ Estimate Viewed',
-        description,
-        color: 0x9b59b6, // Amethyst Purple
-      };
-    } else if (event.includes('Inspection marked complete')) {
-      // Inspection completed - simple confirmation message
-      embedPayload = {
-        title: '🔍 Inspection Completed',
-        description: `Inspection for Repair Order #${roNumber} has been marked complete.`,
-        color: 0xe67e22, // Carrot Orange
-      };
-    } else if (event.includes('Purchase Order') && event.includes('received')) {
-      // Purchase order received
-      embedPayload = {
-        title: '📦 Purchase Order Received',
-        description: `Purchase Order #${data.purchaseOrderId} has been marked as received.`,
-        color: 0x7f8c8d, // Gray
-      };
-    } else {
-      // Unknown event
-      embedPayload = {
-        title: 'ℹ️ Tekmetric Notification',
-        description: event,
-        color: 0x95a5a6, // Light Gray-Blue
-      };
+      default:
+        embed.title = 'Unknown Event';
+        embed.description = `Event type: ${eventData.event}`;
+        break;
     }
 
-    // Send the embed to Discord webhook
-    if (embedPayload) {
-      await fetch(DISCORD_WEBHOOK_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ embeds: [embedPayload] }),
-      });
-      console.log(`📩 Sent notification for event: ${event}`);
-    }
+    // Send the embed to Discord
+    const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
+    await axios.post(webhookUrl, {
+      embeds: [embed],
+    });
 
-    res.status(200).send('OK');
+    res.status(200).send('Webhook received and processed');
   } catch (error) {
-    console.error('❌ Error handling webhook:', error);
-    res.status(500).send('Internal Server Error');
+    console.error('Error processing webhook:', error);
+    res.status(500).send('Error processing webhook');
   }
 });
 
